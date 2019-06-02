@@ -16,6 +16,90 @@ namespace infin8x
 {
     public static class RotationParser
     {
+        [FunctionName("RotationParser")]
+        public static async Task<IActionResult> Run(
+            [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
+            ILogger log)
+        {
+            log.LogInformation("C# HTTP trigger function processed a request.");
+
+            string rotation = await new StreamReader(req.Body).ReadToEndAsync();
+
+            using (AirtableBase airtableBase = new AirtableBase(
+                Environment.GetEnvironmentVariable("airtableApiKey"),
+                Environment.GetEnvironmentVariable("airtableBaseId")))
+            {
+                log.LogInformation("Airtable connection initialized.");
+
+                var rotationNumber = int.Parse(new Regex(@"(^\d+)", RegexOptions.Multiline).Match(rotation).Groups[1].Value);
+                var rotationStartDateString = new Regex(@" (\d{2}[A-Z]{3})").Match(rotation).Groups[1].Value;
+                var rotationStartDate = monthConverter[rotationStartDateString.Substring(2, 3)] + "/" +
+                                                       int.Parse(rotationStartDateString.Substring(0, 2)) + "/" +
+                                                       DateTime.Now.Year;
+                var rotationNumberOfAttendants = new Regex(@"([0-9]+) F\/A").Match(rotation).Groups[1].Value;
+                log.LogInformation($"Parsed rotation #{rotationNumber}-{rotationStartDate}.");
+
+                // Update rotation
+                log.LogInformation("Updating rotation.");
+                var rotationRecordId = req.Headers["Airtable-Record-Id"][0];
+                var rotationLookup = airtableBase.RetrieveRecord("Rotations", rotationRecordId).GetAwaiter().GetResult();
+                if (!rotationLookup.Success)
+                {
+                    log.LogError(rotationLookup.AirtableApiError.ErrorMessage);
+                    return new StatusCodeResult(500);
+                }
+                log.LogInformation("Looked up rotation successfully.");
+                var rotationFields = new Fields();
+                rotationFields.AddField("Rotation #", rotationNumber);
+                rotationFields.AddField("Date", rotationStartDate);
+                var rotationUpdate = airtableBase.UpdateRecord("People", rotationFields, rotationRecordId).GetAwaiter().GetResult();
+                if (!rotationUpdate.Success)
+                {
+                    log.LogError(rotationUpdate.AirtableApiError.ErrorMessage);
+                    return new StatusCodeResult(500);
+                }
+                log.LogInformation("Updated rotation successfully.");
+
+                // Add flight attendants
+                for (int i = 0; i < int.Parse(rotationNumberOfAttendants); i++)
+                {
+                    log.LogInformation($"Starting to process flight attendant {i}.");
+                    var flightAttendantRecord = new Regex($@"^{Convert.ToChar(65 + i)} 0([0-9]*) ([A-Za-z]*)([A-Za-z ]*)", RegexOptions.Multiline).Match(rotation);
+                    var faEmployeeId = int.Parse(flightAttendantRecord.Groups[1].Value);
+
+                    var faLookup = airtableBase.ListRecords("People", null, null, $"{{Employee ID}} = {faEmployeeId}").GetAwaiter().GetResult();
+
+                    if (!faLookup.Success)
+                    {
+                        log.LogError(faLookup.AirtableApiError.ErrorMessage);
+                        return new StatusCodeResult(500);
+                    }
+                    log.LogInformation($"Looked up flight attendant {faLookup} successfully.");
+
+                    if (!faLookup.Records.Any())
+                    {
+                        log.LogInformation("Adding flight attendant.");
+                        var fields = new Fields();
+                        fields.AddField("Employee ID", faEmployeeId);
+                        fields.AddField("First name", flightAttendantRecord.Groups[2].Value);
+                        fields.AddField("Last name", flightAttendantRecord.Groups[3].Value);
+                        var result = airtableBase.CreateRecord("People", fields).GetAwaiter().GetResult();
+                        if (!result.Success)
+                        {
+                            log.LogError(result.AirtableApiError.ErrorMessage);
+                            return new StatusCodeResult(500);
+                        }
+                        log.LogInformation("Added flight attendant successfully.");
+                    }
+                    else
+                    {
+                        log.LogInformation("Flight attendant already registered.");
+                    }
+                }
+            }
+            return (ActionResult)new OkResult();
+        }
+
         private static readonly Dictionary<string, int> monthConverter = new Dictionary<string, int> {
             {"JAN", 01},
             {"FEB", 02},
@@ -30,54 +114,5 @@ namespace infin8x
             {"NOV", 11},
             {"DEC", 12},
             };
-
-        [FunctionName("RotationParser")]
-        public static async Task<IActionResult> Run(
-            [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
-            ILogger log)
-        {
-            log.LogInformation("C# HTTP trigger function processed a request.");
-
-            string rotation = await new StreamReader(req.Body).ReadToEndAsync();
-
-            using (AirtableBase airtableBase = new AirtableBase(
-                Environment.GetEnvironmentVariable("airtableApiKey"),
-                Environment.GetEnvironmentVariable("airtableBaseId")))
-            {
-                var rotationNumber = new Regex(@"(^\d+)", RegexOptions.Multiline).Match(rotation).Groups[1].Value;
-                var rotationStartDate = new Regex(@" (\d{2}[A-Z]{3})").Match(rotation).Groups[1].Value;
-                var rotationStartDateParse = new Tuple<int, int>(
-                    monthConverter[rotationStartDate.Substring(2, 3)],
-                    int.Parse(rotationStartDate.Substring(0, 2))
-                );
-
-                var numberOfFAsInRotation = new Regex(@"([0-9]+) F\/A").Match(rotation).Groups[1].Value;
-
-                for (int i = 0; i < int.Parse(numberOfFAsInRotation); i++)
-                {
-                    var flightAttendant = new Regex($@"^{Convert.ToChar(65 + i)} 0([0-9]*) ([A-Za-z]*)([A-Za-z ]*)", RegexOptions.Multiline).Match(rotation);
-                    var faEmployeeId = int.Parse(flightAttendant.Groups[1].Value);
-
-                    var faLookup = airtableBase.ListRecords("People", null, null, $"{{Employee ID}} = {faEmployeeId}").GetAwaiter().GetResult();
-                    if (!faLookup.Records.Any())
-                    {
-                        var fields = new Fields();
-                        fields.AddField("Employee ID", faEmployeeId);
-                        fields.AddField("First name", flightAttendant.Groups[2].Value);
-                        fields.AddField("Last name", flightAttendant.Groups[3].Value);
-                        var add = airtableBase.CreateRecord("People", fields).GetAwaiter().GetResult();
-                    }
-                }
-
-                var rotationRecordId = req.Headers["Airtable-Record-Id"][0];
-                var rotationLookup = airtableBase.RetrieveRecord("Rotations", rotationRecordId).GetAwaiter().GetResult();
-                var rotationFields = new Fields();
-                rotationFields.AddField("Rotation #", int.Parse(rotationNumber));
-                rotationFields.AddField("Date", 
-                                        rotationStartDateParse.Item1 + "/" + rotationStartDateParse.Item2 + "/" + DateTime.Now.Year);
-                airtableBase.UpdateRecord("People", rotationFields, rotationRecordId).GetAwaiter().GetResult();
-            }
-            return (ActionResult)new OkResult();
-        }
     }
 }
