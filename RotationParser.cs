@@ -10,11 +10,14 @@ using Newtonsoft.Json;
 using System.Text.RegularExpressions;
 using AirtableApiClient;
 using System.Linq;
+using System.Collections.Generic;
 
 namespace infin8x
 {
     public static class RotationParser
     {
+        // private const Dictionary<string,int> monthConverter = new Dictionary<string, int> {{"JAN", 01}};
+
         [FunctionName("RotationParser")]
         public static async Task<IActionResult> Run(
             [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
@@ -28,6 +31,13 @@ namespace infin8x
                 Environment.GetEnvironmentVariable("airtableApiKey"),
                 Environment.GetEnvironmentVariable("airtableBaseId")))
             {
+                var rotationNumber = new Regex(@"(^\d+)", RegexOptions.Multiline).Match(rotation).Groups[1].Value;
+                var rotationStartDate = new Regex(@" (\d{2}[A-Z]{3})").Match(rotation).Groups[1].Value;
+                var rotationStartDateParse = new Tuple<int,int>(
+                    ,
+                    int.Parse(rotationStartDate.Substring(0,2))
+                );
+
                 var numberOfFAsInRotation = new Regex(@"([0-9]+) F\/A").Match(rotation).Groups[1].Value;
 
                 for (int i = 0; i < int.Parse(numberOfFAsInRotation); i++)
@@ -45,6 +55,16 @@ namespace infin8x
                         var add = airtableBase.CreateRecord("People", fields);
                     }
                 }
+
+                var rotationLookup = airtableBase.ListRecords("Rotations", null, null, $"SEARCH(\"{rotation.Substring(0, 200)}\", {{Rotation text}}) > 0").GetAwaiter().GetResult();
+                if (!rotationLookup.Records.Any())
+                {
+                    var fields = new Fields();
+                    fields.AddField("Rotation #", rotationNumber);
+                    // fields.AddField("Date", new DateTime(DateTime.Now.Year, , )));
+                    var add = airtableBase.UpdateRecord("People", fields, rotationLookup.Records.First().Fields["Rotation ID"].ToString());
+                }
+
             }
 
             return (ActionResult)new OkResult();
