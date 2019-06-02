@@ -16,7 +16,20 @@ namespace infin8x
 {
     public static class RotationParser
     {
-        // private const Dictionary<string,int> monthConverter = new Dictionary<string, int> {{"JAN", 01}};
+        private static readonly Dictionary<string, int> monthConverter = new Dictionary<string, int> {
+            {"JAN", 01},
+            {"FEB", 02},
+            {"MAR", 03},
+            {"APR", 04},
+            {"MAY", 05},
+            {"JUN", 06},
+            {"JUL", 07},
+            {"AUG", 08},
+            {"SEP", 09},
+            {"OCT", 10},
+            {"NOV", 11},
+            {"DEC", 12},
+            };
 
         [FunctionName("RotationParser")]
         public static async Task<IActionResult> Run(
@@ -33,9 +46,9 @@ namespace infin8x
             {
                 var rotationNumber = new Regex(@"(^\d+)", RegexOptions.Multiline).Match(rotation).Groups[1].Value;
                 var rotationStartDate = new Regex(@" (\d{2}[A-Z]{3})").Match(rotation).Groups[1].Value;
-                var rotationStartDateParse = new Tuple<int,int>(
-                    ,
-                    int.Parse(rotationStartDate.Substring(0,2))
+                var rotationStartDateParse = new Tuple<int, int>(
+                    monthConverter[rotationStartDate.Substring(2, 3)],
+                    int.Parse(rotationStartDate.Substring(0, 2))
                 );
 
                 var numberOfFAsInRotation = new Regex(@"([0-9]+) F\/A").Match(rotation).Groups[1].Value;
@@ -52,21 +65,18 @@ namespace infin8x
                         fields.AddField("Employee ID", faEmployeeId);
                         fields.AddField("First name", flightAttendant.Groups[2].Value);
                         fields.AddField("Last name", flightAttendant.Groups[3].Value);
-                        var add = airtableBase.CreateRecord("People", fields);
+                        var add = airtableBase.CreateRecord("People", fields).GetAwaiter().GetResult();
                     }
                 }
 
-                var rotationLookup = airtableBase.ListRecords("Rotations", null, null, $"SEARCH(\"{rotation.Substring(0, 200)}\", {{Rotation text}}) > 0").GetAwaiter().GetResult();
-                if (!rotationLookup.Records.Any())
-                {
-                    var fields = new Fields();
-                    fields.AddField("Rotation #", rotationNumber);
-                    // fields.AddField("Date", new DateTime(DateTime.Now.Year, , )));
-                    var add = airtableBase.UpdateRecord("People", fields, rotationLookup.Records.First().Fields["Rotation ID"].ToString());
-                }
-
+                var rotationRecordId = req.Headers["Airtable-Record-Id"][0];
+                var rotationLookup = airtableBase.RetrieveRecord("Rotations", rotationRecordId).GetAwaiter().GetResult();
+                var rotationFields = new Fields();
+                rotationFields.AddField("Rotation #", int.Parse(rotationNumber));
+                rotationFields.AddField("Date", 
+                                        rotationStartDateParse.Item1 + "/" + rotationStartDateParse.Item2 + "/" + DateTime.Now.Year);
+                airtableBase.UpdateRecord("People", rotationFields, rotationRecordId).GetAwaiter().GetResult();
             }
-
             return (ActionResult)new OkResult();
         }
     }
